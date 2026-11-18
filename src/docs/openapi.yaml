@@ -1,0 +1,214 @@
+openapi: 3.0.3
+info:
+  title: Game Store REST API (UniversalBackend Lab 3)
+  version: 3.0.0
+  description: API магазина цифровых игр с JWT-аутентификацией, RBAC, пагинацией, аудитом действий и защитой от IDOR.
+servers:
+  - url: http://localhost:3000/api
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            message:
+              type: string
+    PaginationMeta:
+      type: object
+      properties:
+        page: { type: integer, example: 1 }
+        limit: { type: integer, example: 10 }
+        total: { type: integer, example: 42 }
+        totalPages: { type: integer, example: 5 }
+        hasNext: { type: boolean, example: true }
+        hasPrevious: { type: boolean, example: false }
+paths:
+  /auth/register:
+    post:
+      summary: Регистрация покупателя
+      tags: [Auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, example: student@example.com }
+                password: { type: string, example: ExamplePassword123 }
+                name: { type: string, example: Василенко Александр }
+      responses:
+        '201': { description: Пользователь создан (роль CUSTOMER) }
+        '400': { description: Ошибка валидации }
+        '409': { description: Email уже зарегистрирован }
+  /auth/login:
+    post:
+      summary: Вход в систему (Rate Limit 5 попыток / 15 мин)
+      tags: [Auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, example: student@example.com }
+                password: { type: string, example: ExamplePassword123 }
+      responses:
+        '200': { description: Пара accessToken и refreshToken }
+        '401': { description: Неверные учетные данные }
+        '429': { description: Превышен лимит попыток входа }
+  /auth/refresh:
+    post:
+      summary: Ротация Refresh Token и получение нового Access Token
+      tags: [Auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '200': { description: Новая пара токенов }
+        '401': { description: Токен недействителен или отозван }
+  /auth/logout:
+    post:
+      summary: Выход и отзыв Refresh Token
+      tags: [Auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '200': { description: Сеанс завершен }
+  /auth/me:
+    get:
+      summary: Профиль текущего пользователя
+      tags: [Auth]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Данные пользователя и роли }
+        '401': { description: Не авторизован }
+  /products:
+    get:
+      summary: Публичный каталог игр (пагинация, поиск, фильтрация, сортировка)
+      tags: [Products]
+      parameters:
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: limit, in: query, schema: { type: integer, default: 10, maximum: 100 } }
+        - { name: search, in: query, schema: { type: string } }
+        - { name: categoryId, in: query, schema: { type: integer } }
+        - { name: platform, in: query, schema: { type: string } }
+        - { name: minPrice, in: query, schema: { type: number } }
+        - { name: maxPrice, in: query, schema: { type: number } }
+        - { name: isActive, in: query, schema: { type: boolean } }
+        - { name: sort, in: query, schema: { type: string, enum: [id, name, price, createdAt, quantity] } }
+        - { name: direction, in: query, schema: { type: string, enum: [asc, desc] } }
+      responses:
+        '200': { description: Список игр и метаданные пагинации }
+        '400': { description: Некорректные параметры запроса }
+    post:
+      summary: Добавление новой игры (ADMIN, MANAGER)
+      tags: [Products]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201': { description: Игра добавлена }
+        '401': { description: Требуется аутентификация }
+        '403': { description: Недостаточно прав }
+  /orders:
+    get:
+      summary: Список заказов (CUSTOMER видит только свои, ADMIN/MANAGER — все)
+      tags: [Orders]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: limit, in: query, schema: { type: integer, default: 10 } }
+        - { name: status, in: query, schema: { type: string, enum: [NEW, CONFIRMED, SHIPPED, COMPLETED, CANCELLED] } }
+      responses:
+        '200': { description: Список заказов }
+    post:
+      summary: Оформление нового заказа (customerId определяется по токену)
+      tags: [Orders]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201': { description: Заказ оформлен }
+        '409': { description: Недостаточно ключей на складе }
+  /orders/{id}:
+    get:
+      summary: Детали заказа по ID (защита от IDOR)
+      tags: [Orders]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: Данные заказа }
+        '403': { description: Доступ к чужому заказу запрещен }
+        '404': { description: Заказ не найден }
+  /orders/{id}/status:
+    patch:
+      summary: Изменение статуса заказа (CUSTOMER может только отменить свой NEW заказ)
+      tags: [Orders]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: Статус обновлен }
+        '403': { description: Запрещено ролью или чужой заказ }
+        '409': { description: Недопустимый переход статуса }
+  /users:
+    get:
+      summary: Список пользователей (только ADMIN)
+      tags: [Users]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Список пользователей без passwordHash }
+        '403': { description: Только для ADMIN }
+  /users/{id}/roles:
+    put:
+      summary: Назначение ролей пользователю (только ADMIN)
+      tags: [Users]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: Роли обновлены }
+  /users/{id}/status:
+    patch:
+      summary: Блокировка/разблокировка пользователя (только ADMIN)
+      tags: [Users]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: Статус активности изменен }
+  /audit-logs:
+    get:
+      summary: Просмотр журнала аудита (только ADMIN)
+      tags: [Audit]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: limit, in: query, schema: { type: integer, default: 20 } }
+        - { name: action, in: query, schema: { type: string } }
+        - { name: entityType, in: query, schema: { type: string } }
+        - { name: userId, in: query, schema: { type: integer } }
+      responses:
+        '200': { description: Записи журнала действий }
+        '403': { description: Только для ADMIN }
